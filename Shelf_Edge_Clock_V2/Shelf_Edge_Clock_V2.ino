@@ -24,15 +24,21 @@ Before you install this code you need to set the time on your DS3231. Once you h
  *                (12h format, so 0:00/12:00 = 12 comets). Constant duration (~1.5 s)
  *                no matter the hour - count the comets to read the hour.
  *
- * MOD: Night mode
- *  - all LEDs (clock face + downlighter) are off from 23:00 to 06:00
- *  - the RTC keeps running on main power the whole time, no external time clock needed
+ * MOD: Night mode (optional, currently DISABLED)
+ *  - if nightModeEnabled is true: all LEDs are off from 23:00 to 06:00
+ *  - if false: the moonlight colour scheme takes over at night instead
  *
- * MOD: Time-of-day colour schemes
+ * MOD: Time-of-day colour schemes (4 pairs)
+ *  - 00:00-05:59 moon:    very dim deep blue / faint ember - readable glow, does not light the room
  *  - 06:00-11:59 morning: sunrise (golden hours, soft sky blue minutes)
  *  - 12:00-17:59 day:     vivid high-contrast colours for bright rooms (orange / azure)
- *  - 18:00-22:59 evening: cozy sunset (ember hours, warm white minutes)
+ *  - 18:00-23:59 evening: cozy sunset (ember hours, warm white minutes)
  *  - the colours switch automatically; chime animations use the active scheme
+ *
+ * MOD: Brightness fix
+ *  - constrain() stops map() from extrapolating (negative values wrapped to full
+ *    brightness in dark rooms -> random flash every few seconds)
+ *  - deadband of 4 stops the visible twitching on small sensor fluctuations
 
 */
 
@@ -59,6 +65,12 @@ DateTime MyDateAndTime;
 // this hex method is the same as html colour codes just with "0x" instead of "#" in front
 
 // ----- time-of-day colour schemes -----
+// MOON 00:00-05:59 - "moonlight": deliberately very dim, deep colours.
+// Together with the auto-dimming this is just a faint glow - readable up close,
+// but it will not light up the room at night.
+const uint32_t moonHourColour   = 0x200800; // faint ember
+const uint32_t moonMinuteColour = 0x001030; // deep midnight blue
+
 // MORNING 06:00-11:59 - "sunrise": low warm sun + pale morning sky
 const uint32_t morningHourColour   = 0xA05000; // golden
 const uint32_t morningMinuteColour = 0x3070A0; // soft sky blue
@@ -68,10 +80,20 @@ const uint32_t morningMinuteColour = 0x3070A0; // soft sky blue
 const uint32_t dayHourColour   = 0xFF5000; // vivid orange
 const uint32_t dayMinuteColour = 0x0080FF; // vivid azure
 
-// EVENING 18:00-22:59 - "sunset/fireplace": warm, calm, low-key
+// EVENING 18:00-23:59 - "sunset/fireplace": warm, calm, low-key
 const uint32_t eveningHourColour   = 0x902000; // ember / copper
 const uint32_t eveningMinuteColour = 0xA06428; // warm white
 // --------------------------------------
+
+// ----- colour scheme TEST flags -----
+// set exactly ONE of these to true to preview that scheme right now,
+// regardless of the actual time (first true flag wins, top to bottom).
+// Set all four back to false for normal automatic time-of-day switching.
+const bool forceMoonColours    = false;
+const bool forceMorningColours = false;
+const bool forceDayColours     = false;
+const bool forceEveningColours = false;
+// ------------------------------------
 
 // active colours - set automatically every loop by updateColoursForTimeOfDay()
 uint32_t clockMinuteColour = dayMinuteColour;
@@ -88,7 +110,10 @@ const int chimePauseBetween = 150; // pause between quarter sweeps in ms so they
 // ------------------------------------
 
 // ----- night mode settings -----
-const bool nightModeEnabled = false; // TESTING: set back to true when done testing!
+// If enabled, the LEDs go completely dark from nightStartHour to nightEndHour
+// and override the moonlight colour scheme. Currently disabled: at night the
+// clock shows the dim moonlight colours instead of switching off.
+const bool nightModeEnabled = false;
 const int nightStartHour = 23;       // LEDs off from this hour (24h format)...
 const int nightEndHour   = 6;        // ...until this hour
 // -------------------------------
@@ -143,10 +168,10 @@ void loop() {
   //read the time
   readTheTime();
 
-  //pick the colour scheme matching the time of day (morning/day/evening)
+  //pick the colour scheme matching the time of day (moon/morning/day/evening)
   updateColoursForTimeOfDay();
 
-  //night mode: keep all LEDs dark between nightStartHour and nightEndHour
+  //night mode (optional): keep all LEDs dark between nightStartHour and nightEndHour
   if (isNightTime()){
     stripClock.clear();
     stripClock.show();
@@ -194,8 +219,16 @@ void loop() {
 
 
   //set the brightness based on ambiant light levels
-  clockFaceBrightness = map(lightSensorValue,50, 1000, 200, 1);
-  stripClock.setBrightness(clockFaceBrightness); // Set brightness value of the LEDs
+  int targetBrightness = constrain(map(lightSensorValue, 50, 1000, 200, 1), 1, 200);
+
+  // deadband: only follow changes of 4 or more, so the clock
+  // doesn't visibly twitch on tiny sensor fluctuations
+  static int appliedBrightness = 100;
+  if (abs(targetBrightness - appliedBrightness) >= 4){
+    appliedBrightness = targetBrightness;
+  }
+  clockFaceBrightness = appliedBrightness;
+  stripClock.setBrightness(clockFaceBrightness);
   Serial.print("Mapped brightness value = ");
   Serial.println(clockFaceBrightness);
 
@@ -226,19 +259,47 @@ void readTheTime(){
 
 
 // sets clockHourColour / clockMinuteColour based on the time of day
+// (or based on a test flag, if one is set)
 void updateColoursForTimeOfDay(){
-  int h = MyDateAndTime.Hour;
 
-  if (h >= 6 && h < 12){
-    // morning
+  // test overrides - first flag that is true wins
+  if (forceMoonColours){
+    clockHourColour   = moonHourColour;
+    clockMinuteColour = moonMinuteColour;
+    return;
+  }
+  if (forceMorningColours){
     clockHourColour   = morningHourColour;
     clockMinuteColour = morningMinuteColour;
-  } else if (h >= 12 && h < 18){
-    // day
+    return;
+  }
+  if (forceDayColours){
+    clockHourColour   = dayHourColour;
+    clockMinuteColour = dayMinuteColour;
+    return;
+  }
+  if (forceEveningColours){
+    clockHourColour   = eveningHourColour;
+    clockMinuteColour = eveningMinuteColour;
+    return;
+  }
+
+  int h = MyDateAndTime.Hour;
+
+  if (h < 6){
+    // moon (00:00-05:59)
+    clockHourColour   = moonHourColour;
+    clockMinuteColour = moonMinuteColour;
+  } else if (h < 12){
+    // morning (06:00-11:59)
+    clockHourColour   = morningHourColour;
+    clockMinuteColour = morningMinuteColour;
+  } else if (h < 18){
+    // day (12:00-17:59)
     clockHourColour   = dayHourColour;
     clockMinuteColour = dayMinuteColour;
   } else {
-    // evening (18:00-22:59) - also used for 23:00-05:59 if night mode is disabled
+    // evening (18:00-23:59)
     clockHourColour   = eveningHourColour;
     clockMinuteColour = eveningMinuteColour;
   }
@@ -248,7 +309,7 @@ void updateColoursForTimeOfDay(){
 // true while the clock should stay dark (handles the range crossing midnight)
 bool isNightTime(){
   if (!nightModeEnabled){
-    return false; // night mode switched off (e.g. for testing)
+    return false; // night mode switched off -> moonlight colours are shown at night
   }
   int h = MyDateAndTime.Hour;
   return (h >= nightStartHour || h < nightEndHour);

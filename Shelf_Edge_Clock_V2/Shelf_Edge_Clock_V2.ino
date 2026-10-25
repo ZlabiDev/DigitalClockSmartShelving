@@ -35,6 +35,12 @@ Before you install this code you need to set the time on your DS3231. Once you h
  *  - 18:00-23:59 evening: cozy sunset (ember hours, warm white minutes)
  *  - the colours switch automatically; chime animations use the active scheme
  *
+ * MOD: Europe/Vienna timezone with automatic DST (Sommer-/Winterzeit)
+ *  - IMPORTANT: set the DS3231 to WINTER TIME (CET / Normalzeit) all year!
+ *  - the sketch adds +1 hour automatically while EU summer time (CEST) is active:
+ *    from the last Sunday of March 02:00 CET to the last Sunday of October 02:00 CET
+ *  - display, chimes, colour schemes and night mode all use the corrected local time
+ *
  * MOD: Brightness fix
  *  - constrain() stops map() from extrapolating (negative values wrapped to full
  *    brightness in dark rooms -> random flash every few seconds)
@@ -244,17 +250,64 @@ void loop() {
 
 
 void readTheTime(){
-  // Ask the clock for the data.
+  // Ask the clock for the data. The RTC runs on CET (winter time) all year;
+  // applyViennaLocalTime() adds +1 h while EU summer time (CEST) is active.
   MyDateAndTime = Clock.read();
+  applyViennaLocalTime();
 
   // And use it
   Serial.println("");
-  Serial.print("Time is: ");   Serial.print(MyDateAndTime.Hour);
+  Serial.print("Local time (Europe/Vienna) is: ");   Serial.print(MyDateAndTime.Hour);
   Serial.print(":"); Serial.print(MyDateAndTime.Minute);
   Serial.print(":"); Serial.println(MyDateAndTime.Second);
   Serial.print("Date is: 20");   Serial.print(MyDateAndTime.Year);
   Serial.print(":");  Serial.print(MyDateAndTime.Month);
   Serial.print(":");    Serial.println(MyDateAndTime.Day);
+}
+
+
+// day of week for a given date, 0 = Sunday (Sakamoto's algorithm)
+int dayOfWeek(int y, int m, int d){
+  static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+  if (m < 3){
+    y -= 1;
+  }
+  return (y + y/4 - y/100 + y/400 + t[m - 1] + d) % 7;
+}
+
+
+// EU daylight saving rule, evaluated on CET (winter time) values:
+// CEST runs from the last Sunday of March 02:00 CET
+// until the last Sunday of October 02:00 CET (= 03:00 CEST)
+bool isSummerTime(int year, int month, int day, int hour){
+  if (month < 3 || month > 10){
+    return false; // Nov-Feb: always winter time
+  }
+  if (month > 3 && month < 10){
+    return true;  // Apr-Sep: always summer time
+  }
+
+  int lastSunday = 31 - dayOfWeek(year, month, 31); // date of the last Sunday
+
+  if (month == 3){
+    // summer time starts on the last Sunday of March at 02:00 CET
+    if (day != lastSunday) return (day > lastSunday);
+    return (hour >= 2);
+  } else {
+    // summer time ends on the last Sunday of October at 02:00 CET
+    if (day != lastSunday) return (day < lastSunday);
+    return (hour < 2);
+  }
+}
+
+
+// converts the CET time from the RTC into Europe/Vienna local time
+// by adding +1 hour while summer time is active
+void applyViennaLocalTime(){
+  int year = 2000 + MyDateAndTime.Year;
+  if (isSummerTime(year, MyDateAndTime.Month, MyDateAndTime.Day, MyDateAndTime.Hour)){
+    MyDateAndTime.Hour = (MyDateAndTime.Hour + 1) % 24;
+  }
 }
 
 
